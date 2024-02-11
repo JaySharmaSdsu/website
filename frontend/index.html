@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Meme Viewer</title>
+    <style>
+        /* Set uniform size for meme images */
+        #meme-container img {
+            max-width: 100%; /* Ensure images scale proportionally */
+            width: 400px; /* Set width to make images a bit bigger */
+            height: auto; /* Auto-adjust height to maintain aspect ratio */
+        }
+    </style>
+</head>
+<body>
+    <h1>Random Meme Viewer</h1>
+    <div id="meme-container">
+        <img id="meme-img" src="" alt="Meme">
+    </div>
+    <button id="get-meme-btn">Get Meme</button>
+
+    <script>
+        async function fetchMeme() {
+            try {
+                const response = await fetch('http://localhost:8000/memes?' + new Date().getTime());
+                if (!response.ok) {
+                    throw new Error('Failed to fetch meme');
+                }
+                const blob = await response.blob();
+                const imageUrl = URL.createObjectURL(blob);
+                document.getElementById('meme-container').innerHTML = `
+                    <img src="${imageUrl}" alt="Meme">
+                `;
+            } catch (error) {
+                console.error(error);
+                alert('Failed to fetch meme');
+            }
+        }
+
+        document.getElementById('get-meme-btn').addEventListener('click', fetchMeme);
+        fetchMeme(); // Fetch a meme when the page loads
+    </script>
+</body>
+</html>
