@@ -1,27 +1,31 @@
+import io
 import logging
-import os as _os
-import urllib.parse as _parse
+import os as os
+import urllib.parse as pars
 import random
-import shutil as _shutil
+import shutil as shutil 
+import sys
 from pathlib import Path
 
-import dotenv as _dotenv
-import praw as _praw
-import requests as _requests
+import boto3
+import dotenv as dotenv
+from PIL import Image
+import praw as praw
+import requests as requests
 
 logging.basicConfig()
 LOGGER = logging.getLogger(__name__)
 LOGGER.setLevel(logging.INFO)
 
 
-_dotenv.load_dotenv()
+dotenv.load_dotenv()
 
 
 def _create_reddit_client():
-    client = _praw.Reddit(
-        client_id=_os.environ["CLIENT_ID"],
-        client_secret=_os.environ["CLIENT_SECRET"],
-        user_agent=_os.environ["USER_AGENT"],
+    client = praw.Reddit(
+        client_id=os.environ["CLIENT_ID"],
+        client_secret=os.environ["CLIENT_SECRET"],
+        user_agent=os.environ["USER_AGENT"],
     )
     return client
 
@@ -33,7 +37,7 @@ def _is_image(post):
         return False
 
 
-def _get_image_urls(client: _praw.Reddit, subreddit_name: str, limit: int):
+def _get_image_urls(client: praw.Reddit, subreddit_name: str, limit: int):
     hot_memes = client.subreddit(subreddit_name).hot(limit=limit)
     image_urls = list()
     for post in hot_memes:
@@ -44,9 +48,9 @@ def _get_image_urls(client: _praw.Reddit, subreddit_name: str, limit: int):
 
 
 def _get_image_name(image_url: str) -> str:
+    image_name = pars.urlparse(image_url)
 
-    image_name = _parse.urlparse(image_url)
-    return _os.path.basename(image_name.path)
+    return os.path.basename(image_name.path)
 
 
 def _create_folder(folder_name: str):
@@ -56,20 +60,45 @@ def _create_folder(folder_name: str):
     """
     if not Path(folder_name).is_dir():
         try: 
-            _os.mkdir(folder_name)
+            os.mkdir(folder_name)
         except OSError as Exception:
             LOGGER.error(f"Error occured while creating {folder_name}: {Exception}")
         else:
             LOGGER.info(f"{folder_name} created")
 
-def _download_image(folder_name: str, raw_response, image_name: str):
+def _compress_and_download_image(folder_name: str, raw_response, image_name: str, quality = 30):
     _create_folder(f"backend/data/{folder_name}")
+    image = Image.open(io.BytesIO(raw_response.data))
+    
+    output_buffer = io.BytesIO()
+    image.save(output_buffer, format='JPEG', quality = quality)
+    output_buffer.seek(0)
+    compressed_size = sys.getsizeof(output_buffer)
+
     with open(f"backend/data/{folder_name}/{image_name}", "wb") as image_file:
-        _shutil.copyfileobj(raw_response, image_file)
-        LOGGER.info(f"Downloaded image at {folder_name}/{image_name}")
+        image_file.write(output_buffer.read())
+        LOGGER.info(f"Downloaded image at {folder_name}/{image_name} and compressed from {sys.getsizeof(raw_response.data)} to {compressed_size}")
+
+def create_s3_bucket(s3, bucket_name, folder_name):
+    response = s3.list_objects_v2(Bucket=bucket_name, Prefix=folder_name)
+
+    if 'Contents' in response:
+        LOGGER.info(f"Folder '{folder_name}' already exists in bucket '{bucket_name}'.")
+    else:
+        s3.put_object(Bucket=bucket_name, Key=folder_name + '/')
+        LOGGER.info(f"Folder '{folder_name}' created successfully in bucket '{bucket_name}'.")
+
+def _upload_to_s3(folder_name, image_name, s3_bucket_name):
+    s3 = boto3.client('s3')
+
+    create_s3_bucket(s3,s3_bucket_name,folder_name)
+    
+    with open (f"backend/data/{folder_name}/{image_name}", "rb") as _file:
+        s3.upload_fileobj(_file, s3_bucket_name, f"{folder_name}/{image_name}")
+        LOGGER.info(f"uploaded {folder_name}/{image_name} to {s3_bucket_name}/{folder_name}/{image_name}")
 
 
-def _collect_memes(subreddit_name: str, limit: int = 20):
+def _collect_memes(subreddit_name: str, limit: int = 20, upload_to_s3:bool = False):
     """
     Collects the images from the urls and stores them into
     the folders named after their subreddits
@@ -80,15 +109,15 @@ def _collect_memes(subreddit_name: str, limit: int = 20):
     )
     for image_url in images_urls:
         image_name = _get_image_name(image_url)
-        response = _requests.get(image_url, stream=True)
+        response = requests.get(image_url, stream=True)
 
         if response.status_code == 200:
             response.raw.decode_content = True
-            _download_image(subreddit_name, response.raw, image_name)
-
+            _compress_and_download_image(subreddit_name,response.raw,image_name)
+            if upload_to_s3:
+                _upload_to_s3(subreddit_name, image_name, "jay-meme-generator")
 
 if __name__ == "__main__":
-    while True:
-        subreddit_list = ["memes","wholesomememes","2meirl4meirl","dankmemes","eyebleach","funny","happy","meirl","OneOrangeBrainCell"]
-        for subreddit in subreddit_list:
-            _collect_memes(random.choice(subreddit_list), limit=50)
+    for _ in range(20):
+        subreddits = os.environ['SUBREDDITS'].split(",")
+        _collect_memes(random.choice(subreddits), limit=5, upload_to_s3=True)
